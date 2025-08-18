@@ -1567,7 +1567,7 @@ def get_args():
 # use when the application is packaged as a zipapp. The usual __main__ form
 # applies when running the code outside of a zipapp, during development.
 
-config = config.Config('paracon', 'paracon_config')
+config = config.Config('paracon', 'config')
 app = Application()
 
 
