@@ -1,78 +1,140 @@
+# paracon/test_pauth.py
+
 import unittest
-import os
-from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.hazmat.primitives import hashes, serialization
-from cryptography.hazmat.primitives.asymmetric.utils import encode_dss_signature, decode_dss_signature
-
+import nacl
+from nacl.signing import SigningKey
 import pauth
+import codecs
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519
+
+def make_test_keypair():
+    """
+    Generate a new Ed25519 keypair (private + public).
+    Returns (private_key, public_key_bytes).
+    """
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+    public_bytes = public_key.public_bytes(
+        encoding = serialization.Encoding.Raw,
+        format   = serialization.PublicFormat.Raw
+    )
+    return private_key, public_bytes
 
 
-class TestPauthPacket(unittest.TestCase):
+def bprint(data):
+    print(codecs.encode(data, "hex").decode())
+
+class TestPauthRoundTrip(unittest.TestCase):
 
     def setUp(self):
-        # Generate a temporary key pair for each test
-        self.private_key = ec.generate_private_key(ec.SECP256R1())
-        self.public_key = self.private_key.public_key()
+        # Generate an ephemeral keypair (Chattervox style)
+        self.signing_key = SigningKey.generate()
+        self.verify_key = self.signing_key.verify_key
+        self.from_call = "ZL2DRS-4"
+        self.message_payload = b"Hello AX.25!"
+        priv, pub = make_test_keypair()
+        self.private_key = priv
+        self.public_key = pub
 
-        # Encode keys to PEM (optional, for debug/info)
-        self.public_pem = self.public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
+
+    def test_roundtrip_unsigned(self):
+        """Round trip without signing"""
+        pkt_out = pauth.to_ax25_payload(
+            from_call=self.from_call,
+            message_payload=self.message_payload,
+            sign=False
         )
-        self.private_pem = self.private_key.private_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PrivateFormat.TraditionalOpenSSL,
-            encryption_algorithm=serialization.NoEncryption()
+
+        # Parse back
+        raw_bytes = pkt_out.packet_payload
+        self.assertEqual(False,pkt_out.signed)
+        self.assertEqual(self.from_call, pkt_out.from_call)
+        self.assertEqual(self.message_payload, pkt_out.message_payload)
+        self.assertEqual(None, pkt_out.signature)
+
+    def test_roundtrip_signed(self):
+        """Round trip with signature"""
+        # Sign the message manually
+        signature = self.private_key.sign(self.message_payload)
+        #signature = self.signing_key.sign(self.message_payload).signature
+        self.signature = signature
+        pkt_out = pauth.to_ax25_payload(
+            from_call=self.from_call,
+            message_payload=self.message_payload,
+            sign=True,
+            signature=signature
         )
 
-        self.message = b"Hello Chattervox!"
+        self.assertEqual(True,pkt_out.signed)
+        self.assertEqual(self.from_call, pkt_out.from_call)
+        self.assertEqual(self.message_payload, pkt_out.message_payload)
+        self.assertEqual(self.signature, pkt_out.signature)
 
-    def sign_message(self, msg: bytes) -> bytes:
-        """Helper: sign message bytes with the test private key."""
-        signature = self.private_key.sign(msg, ec.ECDSA(hashes.SHA256()))
-        return signature
+    def test_double_roundtrip_unsigned(self):
+        """Round trip without signing"""
+        pkt_out = pauth.to_ax25_payload(
+            from_call=self.from_call,
+            message_payload=self.message_payload,
+            sign=False
+        )
 
-    def test_unsigned_round_trip(self):
-        """Unsigned packets should survive assemble→disassemble unchanged and be UNSIGNED."""
-        pkt = pauth.Packet()
-        pkt.version = 1
-        pkt.byte_message = self.message
-        pkt.signature = None
+        # Parse back
+        raw_bytes = pkt_out.packet_payload
+        self.assertEqual(False,pkt_out.signed)
+        self.assertEqual(self.from_call, pkt_out.from_call)
+        self.assertEqual(self.message_payload, pkt_out.message_payload)
+        self.assertEqual(None, pkt_out.signature)
+        #print("part one bytes")
+        #bprint(raw_bytes)
 
-        assembled = pkt.assemble(sign=False)
+        double_pkt_out = pauth.from_ax25_payload(
+            from_call=pkt_out.from_call,
+            packet_payload=pkt_out.packet_payload
+        )
+        self.assertEqual(pkt_out.version, double_pkt_out.version)
+        self.assertEqual(pkt_out.signed, double_pkt_out.signed)
+        self.assertEqual(pkt_out.compressed, double_pkt_out.compressed)
+        self.assertEqual(pkt_out.signature_length, double_pkt_out.signature_length)
+        self.assertEqual(pkt_out.signature, double_pkt_out.signature)
+        self.assertEqual(pkt_out.message_payload, double_pkt_out.message_payload)
+        self.assertEqual(pkt_out.packet_payload, double_pkt_out.packet_payload)
+        self.assertEqual(pkt_out.from_call, double_pkt_out.from_call)
+        self.assertEqual(pkt_out.auth_type, double_pkt_out.auth_type)
 
-        new_pkt = pauth.Packet()
-        msg_out, auth_type = new_pkt.disassemble(assembled, sender_call="ZL2DRS-4")
+    def test_double_roundtrip_signed(self):
+        """Round trip without signing"""
+        pkt_out = pauth.to_ax25_payload(
+            from_call=self.from_call,
+            message_payload=self.message_payload,
+            sign=True
+        )
+        pkt_out.public_key = self.public_key
 
-        self.assertEqual(msg_out, self.message)
-        self.assertEqual(auth_type, pauth.AuthType.UNSIGNED)
 
-    def test_signed_round_trip(self):
-        """Signed packets should be parsed and marked SIGNED_VERIFIED in placeholder logic."""
-        signature = self.sign_message(self.message)
+        # Parse back
+        raw_bytes = pkt_out.packet_payload
+        self.assertEqual(False,pkt_out.signed)
+        self.assertEqual(self.from_call, pkt_out.from_call)
+        self.assertEqual(self.message_payload, pkt_out.message_payload)
+        self.assertEqual(None, pkt_out.signature)
+        #print("part one bytes")
+        #bprint(raw_bytes)
 
-        pkt = pauth.Packet()
-        pkt.version = 1
-        pkt.byte_message = self.message
-        pkt.signature = signature
-
-        assembled = pkt.assemble(sign=True)
-
-        new_pkt = pauth.Packet()
-        msg_out, auth_type = new_pkt.disassemble(assembled, sender_call="ZL2DRS-4")
-
-        self.assertEqual(msg_out, self.message)
-        self.assertIn(auth_type, [pauth.AuthType.SIGNED_VERIFIED, pauth.AuthType.UNTRUSTED])
-
-    def test_bad_packet(self):
-        """Garbage bytes should be marked UNKNOWN."""
-        garbage = b"\x00\x01\x02\x03garbage!"
-        new_pkt = pauth.Packet()
-        msg_out, auth_type = new_pkt.disassemble(garbage, sender_call="ZL2DRS-4")
-
-        self.assertEqual(msg_out, garbage)
-        self.assertEqual(auth_type, pauth.AuthType.UNKNOWN)
-
+        double_pkt_out = pauth.from_ax25_payload(
+            from_call=pkt_out.from_call,
+            packet_payload=pkt_out.packet_payload
+        )
+        self.assertEqual(pkt_out.version, double_pkt_out.version)
+        self.assertEqual(pkt_out.signed, double_pkt_out.signed)
+        self.assertEqual(pkt_out.compressed, double_pkt_out.compressed)
+        self.assertEqual(pkt_out.signature_length, double_pkt_out.signature_length)
+        self.assertEqual(pkt_out.signature, double_pkt_out.signature)
+        self.assertEqual(pkt_out.message_payload, double_pkt_out.message_payload)
+        self.assertEqual(pkt_out.packet_payload, double_pkt_out.packet_payload)
+        self.assertEqual(pkt_out.from_call, double_pkt_out.from_call)
+        self.assertEqual(pkt_out.auth_type, double_pkt_out.auth_type)
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -35,9 +35,11 @@ in the terminal for example.
 """
 
 import zlib
-from typing import Optional
+from typing import Optional, Tuple
 from enum import Enum
-
+import codecs
+def bprint(data):
+     print(codecs.encode(data, "hex").decode())
 
 class AuthType(Enum):
     """
@@ -65,11 +67,19 @@ class Packet:
     Represents a Chattervox packet payload.
 
     Attributes:
-        from_call (str): Sender callsign (from AX.25 header).
-        byte_message (bytes): Byte message for the payload.
-        signature (bytes): Digital signature.
-        data (bytes): Assembled payload ready for AGWPE transmission.
-        auth_type (AuthType): Authentication status after verification.
+        #Packet data
+        version (integer): Version number (1 to 255) 
+        signed (bool): Message is signed
+        compressed (bool): Message is compressed
+        signature_length (integer):  Length of signature
+        signature (bytes): Digital signature
+        message_payload (bytes): byte form of message only
+        packet_payload (bytes): Payload ready to send over AGWPE
+
+        #Meta data
+        from_call (string): packet sender callsign (excluding SSID)
+        auth_type (AuthType): Enum of authentication status
+
     """
 
     def __init__(self):
@@ -86,6 +96,10 @@ class Packet:
         self.from_call: Optional[str]            = None
         self.auth_type: AuthType                 = AuthType.UNKNOWN
 
+        #keys
+        self.public_key                          = None
+        self.private_key                         = None
+
     def assemble(self, sign: bool = False) -> bytes:
         """
         Assemble the packet payload into bytes for AX.25 transmission.
@@ -95,7 +109,7 @@ class Packet:
 
         Returns:
             bytes: Complete payload including header, optional signature, and message.
-            
+
         Payload layout:
             - [0x0000] 16 bits  Magic Header b'x7a39'
             - [0x0002] 8 bits   Version Byte b'x01'
@@ -105,109 +119,124 @@ class Packet:
             - [0x0004] [opt] 8 bits Signature Length
             - [0x0005] [opt] Signature (Signature Length bytes)
             - [rest]   Message (raw or compressed bytes)
-            
+
         """
         payload = b''
 
         # --- Fixed header ---
         header = b"\x7a\x39"  # magic header
+        #bprint(header)
         version = self.version.to_bytes(1, "big")
-    
+
         # --- Flags ---
         # Construct one byte: 6 unused bits, then signature flag, then compression flag
         sig_flag = 1 if self.signature else 0
         comp_flag = 1 if self.compressed else 0
         flags = ((0 << 2) | (sig_flag << 1) | comp_flag)  # put bits in order
         flags_byte = flags.to_bytes(1, "big")
-    
+
         # --- Signature section ---
         signature_section = b""
-        if self.signature:
+        if self.signed:
+            #We actually need to obtain a private key at this point then ceate the message signature
+
+
             sig_len = len(self.signature)
             if sig_len > 255:
                 raise ValueError("Signature length exceeds 255 bytes.")
             signature_section += sig_len.to_bytes(1, "big")  # length
             signature_section += self.signature             # raw bytes
-    
+        else:
+            self.auth_type = AuthType.UNSIGNED
+
         # --- Message section ---
         if self.compressed:
             raise NotImplementedError("Compression not yet implemented.")
 
-    
-        message_section = self.byte_message
+
+        message_section = self.message_payload
 
         # Final payload
-        self.data = header + version + flags_byte + signature_section + message_section
-        return self.data
-        
-    def disassemble(self, packet_payload: bytes, sender_call: Optional[str] = None) -> Tuple[bytes, AuthType]:
+        packet_payload = header + version + flags_byte + signature_section + message_section
+        self.packet_payload = packet_payload
+        #print("assembled packet_payload")
+        #bprint(packet_payload)
+        return self.packet_payload
+
+    def disassemble(self, packet_payload: bytes, from_call: Optional[str] = None) -> Tuple[bytes, AuthType]:
         """
         Parse incoming packet payload bytes, populate the packet data
         and determine authentication status. Does not decode message content.
-    
+
         Args:
             packet_payload (bytes): Raw payload from AX.25 frame.
             sender_call (str, optional): AX.25 source callsign for signature verification.
-    
+
         Returns:
             Tuple[bytes, AuthType]: Sanitized payload bytes and authentication status.
-    
+
         Raises:
             TypeError: If the packet is invalid or too short.
         """
+        #print("unpacking the following payload")
+        #bprint(packet_payload)
+
         if not isinstance(packet_payload, (bytes, bytearray)):
             raise TypeError("Data must be bytes or bytearray")
-    
+
         if len(packet_payload) < 2:
             raise TypeError("Invalid packet: too few bytes")
-    
-        if data[:2] != MAGIC_BYTES:
+
+        self.from_call = from_call
+
+        if packet_payload[:2] != MAGIC_BYTES:
             #This is not a chattervox payload.
-            self.from_call          = sender_call
+            #print("not CV packet")
             self.packet_payload     = packet_payload
             self.auth_type          = AuthType.UNKNOWN
             return self.packet_payload, self.auth_type
         else:
-        
             # Parse header
-            self.version = int.from_bytes(packet_payload[2], "big")
-            flags = data[3]
-            self.compressed = int.from_bytes(packet_payload[3], "big")>2
-            self.signed     = mod(int.from_bytes(packet_payload[3], "big"),2)>0
-        
+            self.version    = packet_payload[2]
+            flags_byte      = packet_payload[3]
+            self.signed     = (flags_byte & 0b10) != 0   # second least significant bit
+            self.compressed = (flags_byte & 0b01) != 0   # least significant bit
+
             idx = 4
             if self.signed:
-                self.signature_length = int.from_bytes(packet_payload[4], "big")
-                self.signature = packet_payload[5:5 + sig_len]
-                idx = 5 + sig_len
+                self.signature_length = packet_payload[4]
+                self.signature = packet_payload[5:5 + self.signature_length]
+                idx = 5 + self.signature_length
             else:
                 self.signature = None
-                self.header['signature_length'] = 0
-        
+                self.signature_length = 0
+
             # Slice the remaining payload (message/compressed data)
             message_payload = packet_payload[idx:]
             self.message_payload = message_payload  # keep raw bytes for further processing
-        
+            self.packet_payload = packet_payload
             # Determine authentication type without decoding the message
-            self.auth_type = self._verify_signature(sender_call)
-        
+            self.auth_type = self._verify_signature(from_call)
+
         # Return raw payload bytes and AuthType
         return self.message_payload, self.auth_type
 
-    def _verify_signature(self, sender_call: Optional[str] = None) -> AuthType:
+    def _verify_signature(self, from_call: Optional[str] = None) -> AuthType:
         """
         Placeholder function to determine authentication status.
 
         Args:
-            sender_call (str): The callsign from AX.25 header.
+            from_call (str): The callsign from AX.25 header.
 
         Returns:
             AuthType: Authentication status of the payload.
         """
-        if not self.signature:
+        if not self.signed:
             return AuthType.UNSIGNED
-        if sender_call is None:
+        if from_call is None:
             return AuthType.UNTRUSTED
+
+        public_key
 
         # Here insert real signature verification against public keyring
         # Example placeholder logic:
@@ -220,9 +249,8 @@ class Packet:
 
         return AuthType.SIGNED_VERIFIED  # default placeholder
 
-def to_ax25_payload(from_call: str, 
-                    byte_message: bytes,
-                    to_call: Optional[str],
+def to_ax25_payload(from_call: str,
+                    message_payload: bytes,
                     sign: bool = False,
                     signature: Optional[bytes] = None
                    ) -> Packet:
@@ -239,15 +267,19 @@ def to_ax25_payload(from_call: str,
         Packet: Assembled Packet object ready for AX.25 transmission.
     """
     pkt = Packet()
-    pkt.from_station = from_call
-    pkt.to_station = to_call
-    pkt.message = message
-    if signature:
+    pkt.from_call = from_call
+    pkt.message_payload = message_payload
+    pkt.signed = sign
+    if pkt.signed:
         pkt.signature = signature
+    else:
+        pkt.signature = None
     pkt.assemble(sign=sign)
     return pkt
 
-def from_ax25_payload(packet_payload: bytes, sender_call: Optional[str] = None) -> Packet:
+def from_ax25_payload(packet_payload: bytes,
+                       from_call: Optional[str] = None
+                     ) -> Packet:
     """
     Parse bytes received from AX.25 into a Packet object with AuthType.
 
@@ -259,6 +291,6 @@ def from_ax25_payload(packet_payload: bytes, sender_call: Optional[str] = None) 
         Packet: Parsed Packet object with auth_type set.
     """
     pkt = Packet()
-    pkt.disassemble(packet_payload, sender_call=sender_call)
+    pkt.disassemble(packet_payload, from_call=from_call)
     return pkt
 
