@@ -32,12 +32,137 @@ Packet authentication status for each incoming packet can be accessed by the cal
 pserver and passed as desired to the tui layer to be handled as desired by way of text colour
 in the terminal for example.
 
-"""
+CALL means call sign without SSID eg N0CALL
+STATION means call sign WITH SSID eg N0CALL-4
 
+"""
+import os
+import re
+import sys
 import zlib
 from typing import Optional, Tuple
 from enum import Enum
 import codecs
+import configparser
+from configparser import ConfigParser
+from pathlib import Path
+from platformdirs import user_config_dir
+from cryptography.hazmat.primitives.asymmetric import ed25519
+from cryptography.hazmat.primitives import serialization
+
+
+APP_NAME = "axauth"
+CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
+
+import os
+from pathlib import Path
+from configparser import ConfigParser
+
+def configure(config_path):
+    cfg = ConfigParser()
+
+    """Interactive setup: ask for callsign, make config, generate keys."""
+    local_call = input("Enter your callsign for authenticating public keys: ").strip().upper()
+    if "-" in callsign:
+        print("⚠️  Please omit SSID (e.g. use N0CALL instead of N0CALL-1).")
+        return
+    ssid_input = input("Enter the SSID for your local station (leave blank for 0): ").strip()
+    SSID = int(ssid_input) if ssid_input else 0
+
+
+    # sensible defaults
+    private_key_path = config_path.parent / f"{local_call}_private.pem"
+    public_keys_dir = config_path.parent / "public_keys"
+
+    cfg["DEFAULT"] = {
+        "LOCAL_CALL": local_call,
+        "SSID": SSID,
+        "private_key": str(private_key_path),
+        "public_keys_dir": str(public_keys_dir)
+    }
+
+    # write config.ini
+    with open(config_path, "w") as f:
+        cfg.write(f)
+
+    # ensure directories exist
+    public_keys_dir.mkdir(parents=True, exist_ok=True)
+
+    print("Created config.ini at:", config_path)
+    print("Private key will be stored at:", private_key_path)
+    print("Public keys folder:", public_keys_dir)
+
+    ensure_keys(config_path)
+
+
+    return cfg
+
+def strip_ssid(call: str) -> str:
+    """
+    Remove SSID from an AX.25 callsign if present.
+
+    Args:
+        call (str): Callsign, possibly with SSID (e.g., 'ZL2DRS-4').
+
+    Returns:
+        str: Callsign without SSID (e.g., 'ZL2DRS').
+    """
+    return call.split("-")[0]
+
+
+def ensure_config(config_path: Path):
+    """Create a config file if it doesn't exist."""
+    if not config_path.exists():
+        print("Error: No authentication configuration found. Run 'pauth.py configure'")
+        sys.exit(1)
+
+def ensure_keys(config_path: Path):
+    # Load config
+    cfg = configparser.ConfigParser()
+    cfg.read(config_path)
+
+    local_call = cfg["DEFAULT"]["LOCAL_CALL"]
+    local_SSID = cfg["DEFAULT"]["SSID"]
+    priv_path = Path(cfg["DEFAULT"]["private_key"])
+    pub_dir = Path(cfg["DEFAULT"]["public_keys_dir"])
+    pub_path = pub_dir / f"{local_call}.pub"
+
+    # Ensure dirs exist
+    priv_path.parent.mkdir(parents=True, exist_ok=True)
+    pub_dir.mkdir(parents=True, exist_ok=True)
+
+    if priv_path.exists() and pub_path.exists():
+        return  # already good
+
+    # Generate keypair
+    private_key = ed25519.Ed25519PrivateKey.generate()
+    public_key = private_key.public_key()
+
+    # Save private key
+    with priv_path.open("wb") as f:
+        f.write(
+            private_key.private_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PrivateFormat.PKCS8,
+                encryption_algorithm=serialization.NoEncryption(),
+            )
+        )
+
+    # Save public key
+    with pub_path.open("wb") as f:
+        f.write(
+            public_key.public_bytes(
+                encoding=serialization.Encoding.PEM,
+                format=serialization.PublicFormat.SubjectPublicKeyInfo,
+            )
+        )
+
+    print(f"Generated new keypair for {local_call}")
+    print(f"  Private key: {priv_path}")
+    print(f"  Public key:  {pub_path}")
+
+
+
 def bprint(data):
      print(codecs.encode(data, "hex").decode())
 
@@ -50,7 +175,6 @@ class AuthType(Enum):
     UNSIGNED          = "NS"  # No signature present
     SIGNED_VERIFIED   = "SV"  # Signature present and verified
     UNTRUSTED         = "UT"  # Signature present but no public key available
-    SIGNED_MISMATCH   = "SM"  # Sender call, sig call missmatch
     INVALID           = "IV"  # Signature invalid (forged/tampered)
 
 # Magic bytes used to identify a Chattervox packet
@@ -93,12 +217,73 @@ class Packet:
         self.packet_payload: Optional[bytes]     = None
 
         #Meta data
-        self.from_call: Optional[str]            = None
+        self.from_call: Optional[str]            = None #NEEDS TO BE CALL NOT STATION as it matches a pub key
         self.auth_type: AuthType                 = AuthType.UNKNOWN
 
         #keys
         self.public_key                          = None
         self.private_key                         = None
+
+        #Load from call from config the following line os only for assembly
+        #self.from_call = strip_ssid(Path(config["DEFAULT"]["LOCAL_CALL"]).expanduser())
+      
+        #Load config
+        self.config = configparser.ConfigParser()
+        self.config.read(CONFIG_FILE)
+
+        # Load keys from config
+        self.private_key, self.public_keys_dir = self.load_keys_from_config(self.config)
+
+    def load_keys_from_config(self, config_path: Path):
+        """
+        Loads the private key and the public keys directory from the config file.
+        Returns (private_key_obj, public_keys_dir Path).
+        """
+        config = self.config
+
+        # Ensure defaults are present
+        if "DEFAULT" not in config:
+            raise ValueError("Config missing [DEFAULT] section")
+
+        private_key_file = Path(config["DEFAULT"]["PRIVATE_KEY"]).expanduser()
+        public_keys_dir  = Path(config["DEFAULT"]["PUBLIC_KEYS_DIR"]).expanduser()
+
+        # --- Load private key ---
+        if not private_key_file.exists():
+            raise FileNotFoundError(f"Private key file not found: {private_key_file}")
+
+        with open(private_key_file, "rb") as f:
+            private_key = serialization.load_pem_private_key(
+                f.read(),
+                password=None,
+            )
+
+        return private_key, public_keys_dir
+
+    def load_public_key(self, from_call):
+        """
+        Look up and load the public key for self.from_call
+        based on the PUBLIC_KEYS_DIR specified in self.config.
+        """
+        config = self.config
+        if from_call is None:
+            raise ValueError("from_call is not set")
+
+        # Expand the configured public key directory
+        public_keys_dir = Path(self.config["DEFAULT"]["PUBLIC_KEYS_DIR"]).expanduser()
+
+        # Build the expected filename
+        key_file = public_keys_dir / f"{self.from_call}.pem"
+
+        if not key_file.exists():
+            #raise FileNotFoundError(f"Public key not found for {self.from_call}: {key_file}")
+            ############ WE COULD WRITE ALTERNATIVE LOOK UPS HERE ##################
+            return None
+        else:
+            # Load the public key
+            with open(key_file, "rb") as f:
+                public_key = serialization.load_pem_public_key(f.read())
+        return public_key
 
     def assemble(self, sign: bool = False) -> bytes:
         """
@@ -130,22 +315,28 @@ class Packet:
 
         # --- Flags ---
         # Construct one byte: 6 unused bits, then signature flag, then compression flag
-        sig_flag = 1 if self.signature else 0
+        sig_flag = 1 if self.signed else 0
         comp_flag = 1 if self.compressed else 0
         flags = ((0 << 2) | (sig_flag << 1) | comp_flag)  # put bits in order
         flags_byte = flags.to_bytes(1, "big")
+        #print("here come the byte")
+        #print(f"{flags_byte[0]:08b}")
 
         # --- Signature section ---
         signature_section = b""
         if self.signed:
-            #We actually need to obtain a private key at this point then ceate the message signature
-
-
+            if self.private_key:
+                self.signature = self.private_key.sign(self.message_payload)
+                #print("signature is\n")
+                #bprint(self.signature)
             sig_len = len(self.signature)
             if sig_len > 255:
                 raise ValueError("Signature length exceeds 255 bytes.")
             signature_section += sig_len.to_bytes(1, "big")  # length
             signature_section += self.signature             # raw bytes
+            self.signature_length = sig_len
+            self.auth_type = AuthType.UNTRUSTED
+            self._verify_signature(self.from_call)
         else:
             self.auth_type = AuthType.UNSIGNED
 
@@ -199,6 +390,7 @@ class Packet:
             # Parse header
             self.version    = packet_payload[2]
             flags_byte      = packet_payload[3]
+            #print(f"{flags_byte:08b}")
             self.signed     = (flags_byte & 0b10) != 0   # second least significant bit
             self.compressed = (flags_byte & 0b01) != 0   # least significant bit
 
@@ -215,6 +407,9 @@ class Packet:
             message_payload = packet_payload[idx:]
             self.message_payload = message_payload  # keep raw bytes for further processing
             self.packet_payload = packet_payload
+
+
+
             # Determine authentication type without decoding the message
             self.auth_type = self._verify_signature(from_call)
 
@@ -223,36 +418,52 @@ class Packet:
 
     def _verify_signature(self, from_call: Optional[str] = None) -> AuthType:
         """
-        Placeholder function to determine authentication status.
+        Verify the payload signature against the stored public key.
 
         Args:
-            from_call (str): The callsign from AX.25 header.
+            from_call (str, optional): The callsign from AX.25 header.
 
         Returns:
             AuthType: Authentication status of the payload.
         """
-        if not self.signed:
+        
+
+
+
+        # No signature present
+        if not self.signed or not self.signature:
             return AuthType.UNSIGNED
-        if from_call is None:
+
+        # No public key available
+        self.public_key = self.load_public_key(from_call)
+        if not self.public_key:
             return AuthType.UNTRUSTED
 
-        public_key
+        # Attempt verification
+        try:
+            self.public_key.verify(self.signature, self.message_pay_load)
+        except Exception:
+            return AuthType.INVALID
 
-        # Here insert real signature verification against public keyring
-        # Example placeholder logic:
-        # if signature valid and public key found:
-        #     return AuthType.SIGNED_VERIFIED
-        # if signature present but key missing:
-        #     return AuthType.UNTRUSTED
-        # if signature invalid:
-        #     return AuthType.INVALID
+        # If callsign is provided, check for mismatch against key identity
+        #if from_call is not None:
+        #    if not self._callsign_matches_key(from_call, self.public_key):
+        #        return AuthType.SIGNED_MISMATCH
 
-        return AuthType.SIGNED_VERIFIED  # default placeholder
+        return AuthType.SIGNED_VERIFIED
+
+
+    def _callsign_matches_key(self, call: str, pubkey) -> bool:
+        """
+        Placeholder for mapping check between callsign and public key.
+        Replace with your real trust model or directory lookup.
+        """
+        return True  # for now, accept everything
+
 
 def to_ax25_payload(from_call: str,
                     message_payload: bytes,
-                    sign: bool = False,
-                    signature: Optional[bytes] = None
+                    sign: bool = False
                    ) -> Packet:
     """
     Create a Packet object and assemble it into bytes.
@@ -266,19 +477,23 @@ def to_ax25_payload(from_call: str,
     Returns:
         Packet: Assembled Packet object ready for AX.25 transmission.
     """
+    
     pkt = Packet()
-    pkt.from_call = from_call
+    pkt.from_call = strip_ssid(from_call)
     pkt.message_payload = message_payload
     pkt.signed = sign
     if pkt.signed:
-        pkt.signature = signature
+        pkt.load_keys_from_config(pkt.config)
+        pkt.signature = pkt.private_key.sign(pkt.message_payload)
     else:
         pkt.signature = None
+
     pkt.assemble(sign=sign)
     return pkt
 
 def from_ax25_payload(packet_payload: bytes,
-                       from_call: Optional[str] = None
+                       from_call: Optional[str] = None,
+                       public_key: Optional[str] = None
                      ) -> Packet:
     """
     Parse bytes received from AX.25 into a Packet object with AuthType.
@@ -291,6 +506,17 @@ def from_ax25_payload(packet_payload: bytes,
         Packet: Parsed Packet object with auth_type set.
     """
     pkt = Packet()
-    pkt.disassemble(packet_payload, from_call=from_call)
+    if public_key:
+        pkt.public_key = public_key
+    pkt.disassemble(packet_payload, from_call=strip_ssid(from_call))
     return pkt
 
+def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "configure":
+        configure(CONFIG_FILE)
+    else:
+        print("Usage: python3 pauth.py configure")
+
+
+if __name__ == "__main__":
+    main()
