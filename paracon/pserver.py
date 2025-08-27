@@ -23,9 +23,10 @@ import time
 import pe.app
 import pe.connect
 import pe.monitor
-
-
 class MonitorType(Enum):
+
+
+
     """
     Type used to identify records for the monitor, a 'listen'-like function
     built into Paracon.
