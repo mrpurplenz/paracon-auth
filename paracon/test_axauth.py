@@ -1,9 +1,9 @@
-# paracon/test_pauth.py
+# paracon/test_axauth.py
 
 import unittest
 import nacl
 from nacl.signing import SigningKey
-import pauth
+import axauth
 import codecs
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -32,7 +32,7 @@ def dep_make_test_keypair():
 def bprint(data):
     print(codecs.encode(data, "hex").decode())
 
-class TestPauthRoundTrip(unittest.TestCase):
+class TestAxauthRoundTrip(unittest.TestCase):
 
     def setUp(self):
         #read in current config and store
@@ -70,7 +70,7 @@ class TestPauthRoundTrip(unittest.TestCase):
 
     def test_roundtrip_unsigned(self):
         """Round trip without signing"""
-        pkt_out = pauth.to_ax25_payload(
+        pkt_out = axauth.to_ax25_payload(
             from_call=self.local_call,
             message_payload=self.message_payload,
             sign=False
@@ -89,7 +89,7 @@ class TestPauthRoundTrip(unittest.TestCase):
         #signature = self.private_key.sign(self.message_payload)
         #signature = self.signing_key.sign(self.message_payload).signature
         #self.signature = signature
-        pkt_out = pauth.to_ax25_payload(
+        pkt_out = axauth.to_ax25_payload(
             from_call=self.from_call,
             message_payload=self.message_payload,
             sign=True
@@ -101,7 +101,7 @@ class TestPauthRoundTrip(unittest.TestCase):
 
     def test_double_roundtrip_unsigned(self):
         """Round trip without signing"""
-        pkt_out = pauth.to_ax25_payload(
+        pkt_out = axauth.to_ax25_payload(
             from_call=self.from_call,
             message_payload=self.message_payload,
             sign=False
@@ -116,11 +116,12 @@ class TestPauthRoundTrip(unittest.TestCase):
         #print("part one bytes")
         #bprint(raw_bytes)
 
-        double_pkt_out = pauth.from_ax25_payload(
+        double_pkt_out = axauth.from_ax25_payload(
             from_call=pkt_out.from_call,
             packet_payload=pkt_out.packet_payload
         )
-        self.assertEqual(pkt_out.version, double_pkt_out.version)
+        self.assertEqual(pkt_out.version_number, double_pkt_out.version_number)
+        self.assertEqual(pkt_out.version_byte, double_pkt_out.version_byte)
         self.assertEqual(pkt_out.signed, double_pkt_out.signed)
         self.assertEqual(pkt_out.compressed, double_pkt_out.compressed)
         self.assertEqual(pkt_out.signature_length, double_pkt_out.signature_length)
@@ -132,7 +133,7 @@ class TestPauthRoundTrip(unittest.TestCase):
 
     def test_double_roundtrip_signed(self):
         """Double round trip with signing"""
-        pkt_out = pauth.to_ax25_payload(
+        pkt_out = axauth.to_ax25_payload(
             from_call=self.from_call,
             message_payload=self.message_payload,
             sign=True,
@@ -149,11 +150,12 @@ class TestPauthRoundTrip(unittest.TestCase):
         #print("part one bytes")
         #bprint(raw_bytes)
 
-        double_pkt_out = pauth.from_ax25_payload(
+        double_pkt_out = axauth.from_ax25_payload(
             from_call=pkt_out.from_call,
             packet_payload=pkt_out.packet_payload
         )
-        self.assertEqual(pkt_out.version, double_pkt_out.version)
+        self.assertEqual(pkt_out.version_number, double_pkt_out.version_number)
+        self.assertEqual(pkt_out.version_byte, double_pkt_out.version_byte)
         self.assertEqual(pkt_out.signed, double_pkt_out.signed)
         self.assertEqual(pkt_out.compressed, double_pkt_out.compressed)
         self.assertEqual(pkt_out.signature_length, double_pkt_out.signature_length)
@@ -162,7 +164,9 @@ class TestPauthRoundTrip(unittest.TestCase):
         self.assertEqual(pkt_out.packet_payload, double_pkt_out.packet_payload)
         self.assertEqual(pkt_out.from_call, double_pkt_out.from_call)
         self.assertEqual(pkt_out.auth_type, double_pkt_out.auth_type)
-
+        print(double_pkt_out.message_payload)
+        bprint(double_pkt_out.packet_payload)
+        print(double_pkt_out.packet_payload.decode('utf-8', 'replace'))
 if __name__ == "__main__":
     unittest.main()
 

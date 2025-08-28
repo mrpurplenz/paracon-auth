@@ -179,7 +179,11 @@ class AuthType(Enum):
 
 # Magic bytes used to identify a Chattervox packet
 MAGIC_BYTES = b'\x7a\x39'     #A constant two-byte value used to identify chattervox packets.
-VERSION = b'\x01'             #A protocol version number between 1-255.
+#MAGIC_BYTES = b''     #A constant two-byte value used to identify chattervox packets.
+
+version_number = 1           #The protocol version number between 1-255.
+version_byte = version_number.to_bytes(1, byteorder='big', signed=False)
+
 
 class HeaderFlags:
     """Bitmask flags for Chattervox packet headers."""
@@ -208,7 +212,8 @@ class Packet:
 
     def __init__(self):
         #Packet data
-        self.version: Optional[integer]          = 0  
+        self.version_number: Optional[integer]   = version_number
+        self.version_byte                        = version_number.to_bytes(1, byteorder='big', signed=False)
         self.signed: Optional[bool]              = False
         self.compressed: Optional[bool]          = False
         self.signature_length: Optional[integer] = 0
@@ -309,9 +314,9 @@ class Packet:
         payload = b''
 
         # --- Fixed header ---
-        header = b"\x7a\x39"  # magic header
+        header = MAGIC_BYTES  # magic header
         #bprint(header)
-        version = self.version.to_bytes(1, "big")
+        version_byte = self.version_byte
 
         # --- Flags ---
         # Construct one byte: 6 unused bits, then signature flag, then compression flag
@@ -348,7 +353,7 @@ class Packet:
         message_section = self.message_payload
 
         # Final payload
-        packet_payload = header + version + flags_byte + signature_section + message_section
+        packet_payload = header + version_byte + flags_byte + signature_section + message_section
         self.packet_payload = packet_payload
         #print("assembled packet_payload")
         #bprint(packet_payload)
@@ -388,11 +393,12 @@ class Packet:
             return self.packet_payload, self.auth_type
         else:
             # Parse header
-            self.version    = packet_payload[2]
-            flags_byte      = packet_payload[3]
+            self.version_number = packet_payload[2]
+            self.version_byte   = version_number.to_bytes(1, byteorder='big', signed=False)
+            flags_byte          = packet_payload[3]
             #print(f"{flags_byte:08b}")
-            self.signed     = (flags_byte & 0b10) != 0   # second least significant bit
-            self.compressed = (flags_byte & 0b01) != 0   # least significant bit
+            self.signed         = (flags_byte & 0b10) != 0   # second least significant bit
+            self.compressed     = (flags_byte & 0b01) != 0   # least significant bit
 
             idx = 4
             if self.signed:
