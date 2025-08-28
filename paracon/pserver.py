@@ -41,6 +41,10 @@ except ImportError:
     warnings.warn("axauth not found. Authentication features disabled.")
 
 def data_from_signed(data, call_from):
+    """
+    Sanitises a payload signed with the chattervox protocol and returns 
+    the authentication status.
+    """
     auth_packet = axauth.from_ax25_payload(data, call_from)
     sanitised_data = auth_packet.message_payload
     auth_type = auth_packet.auth_type #Used to identify authentication status
@@ -50,7 +54,7 @@ def data_from_signed(data, call_from):
 def signed_from_data(data, call_from):
     """
     Converts a standard payload into a chattervox signed payload when
-    axauth is available
+    axauth is available.
     """
     sign = True
     auth_packet = axauth.to_ax25_payload(call_from,
@@ -94,11 +98,11 @@ class _Monitor(pe.monitor.Monitor):
     def _monitored_unproto(self, port, call_from, call_to, text, data, own):
         mon_type = MonitorType.UNPROTO_OWN if own else MonitorType.UNPROTO_INFO
         self._queue.put((mon_type, port, text))
-        #self._queue.put((mon_type, port, data.decode("utf-8","replace")))
 
         if HAVE_AXAUTH:
+            #Attempt to sanitise a packet if signed
             data = data_from_signed(data, call_from)
-        #    data = "direct text".encode("utf-8")
+
         if ' pid=F0 ' in text:
             self._queue.put((MonitorType.UNPROTO_TEXT, port,
                              data.decode('utf-8', 'replace')))
@@ -232,20 +236,11 @@ class Server:
 
     def send_unproto(self, port, call_from, call_to, data, via):
         if HAVE_AXAUTH:
-            dataisstring=False
             if isinstance(data, str):
-                dataisstring=True
                 bytedata = data.encode("utf-8")
-                #bprint(data)
             else:
                 bytedata=data
-            signedbytedata = signed_from_data(bytedata, call_from)
-            unsignedbytedata = data_from_signed(signedbytedata,call_from)
-            #bprint(signedbytedata)
-            #if dataisstring:
-            #    data=data.decode("utf-8")
-            #data="test at point of awgpe send"
-            data=signedbytedata
+            data = signed_from_data(bytedata, call_from)
         self._engine.send_unproto(port, call_from, call_to, data, via)
 
     @property

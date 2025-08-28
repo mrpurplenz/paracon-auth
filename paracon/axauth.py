@@ -6,34 +6,32 @@
 # =============================================================================
 
 """
-Paracon Auth module
+axauth module
 
 This module provides classes and functions to construct, disassemble,
 compress, and optionally sign or verify Chattervox payloads for use
-with Paracon's pserver.py (AGWPE-based) module. The implementation is
-based on the chattervox protocol v1 from Brannon Dorsey described at
+with ax25 software such as Paracon's pserver.py (AGWPE-based) module.
+The implementation isbased on the chattervox protocol v1 from Brannon Dorsey
+described at:
 
 https://github.com/brannondorsey/chattervox?tab=readme-ov-file#chattervox-protocol-v1-packet
 
 The Packet class handles the payload-level byte data; AX.25 framing
-is handled by Paracon/AGWPE. 
+is handled by the ax.25 software such as Paracon/AGWPE.
 
 Outgoing packets are created with "from_ax25_payload", incoming packets
 are created with "to_ax25_payload".
 
 Incoming packets are disassembled, verified, and the sanitised byte payload
-and authentication status made available. 
+and authentication status made available.
 
-Outgoing packets are assembled and signed with the 
+Outgoing packets are assembled and signed with the
 local private key provided the signing bool is set, and the payload byte array
 made available.
 
 Packet authentication status for each incoming packet can be accessed by the calling
-pserver and passed as desired to the tui layer to be handled as desired by way of text colour
-in the terminal for example.
-
-CALL means call sign without SSID eg N0CALL
-STATION means call sign WITH SSID eg N0CALL-4
+program and used as desired such as colouring the displayed text or dropping 
+unauthorised commands for example.
 
 """
 import os
@@ -54,10 +52,6 @@ from cryptography.hazmat.primitives import serialization
 APP_NAME = "axauth"
 CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
 
-import os
-from pathlib import Path
-from configparser import ConfigParser
-
 def configure(config_path):
     cfg = ConfigParser()
 
@@ -68,7 +62,6 @@ def configure(config_path):
         return
     ssid_input = input("Enter the SSID for your local station (leave blank for 0): ").strip()
     SSID = int(ssid_input) if ssid_input else 0
-
 
     # sensible defaults
     private_key_path = config_path.parent / f"{local_call}_private.pem"
@@ -113,7 +106,7 @@ def strip_ssid(call: str) -> str:
 def ensure_config(config_path: Path):
     """Create a config file if it doesn't exist."""
     if not config_path.exists():
-        print("Error: No authentication configuration found. Run 'pauth.py configure'")
+        print("Error: No authentication configuration found. Run 'axauth configure'")
         sys.exit(1)
 
 def ensure_keys(config_path: Path):
@@ -179,7 +172,6 @@ class AuthType(Enum):
 
 # Magic bytes used to identify a Chattervox packet
 MAGIC_BYTES = b'\x7a\x39'     #A constant two-byte value used to identify chattervox packets.
-#MAGIC_BYTES = b''     #A constant two-byte value used to identify chattervox packets.
 
 version_number = 1           #The protocol version number between 1-255.
 version_byte = version_number.to_bytes(1, byteorder='big', signed=False)
@@ -187,7 +179,7 @@ version_byte = version_number.to_bytes(1, byteorder='big', signed=False)
 
 class HeaderFlags:
     """Bitmask flags for Chattervox packet headers."""
-    SIGNED            = False  #A value of True indicates that the message contains a ECDSA digital signature.    
+    SIGNED            = False  #A value of True indicates that the message contains a ECDSA digital signature.
     COMPRESSED        = False  #A value of True indicates that the message payload is compressed.
 
 class Packet:
@@ -229,9 +221,6 @@ class Packet:
         self.public_key                          = None
         self.private_key                         = None
 
-        #Load from call from config the following line os only for assembly
-        #self.from_call = strip_ssid(Path(config["DEFAULT"]["LOCAL_CALL"]).expanduser())
-      
         #Load config
         self.config = configparser.ConfigParser()
         self.config.read(CONFIG_FILE)
@@ -315,7 +304,6 @@ class Packet:
 
         # --- Fixed header ---
         header = MAGIC_BYTES  # magic header
-        #bprint(header)
         version_byte = self.version_byte
 
         # --- Flags ---
@@ -324,16 +312,12 @@ class Packet:
         comp_flag = 1 if self.compressed else 0
         flags = ((0 << 2) | (sig_flag << 1) | comp_flag)  # put bits in order
         flags_byte = flags.to_bytes(1, "big")
-        #print("here come the byte")
-        #print(f"{flags_byte[0]:08b}")
 
         # --- Signature section ---
         signature_section = b""
         if self.signed:
             if self.private_key:
                 self.signature = self.private_key.sign(self.message_payload)
-                #print("signature is\n")
-                #bprint(self.signature)
             sig_len = len(self.signature)
             if sig_len > 255:
                 raise ValueError("Signature length exceeds 255 bytes.")
@@ -348,15 +332,11 @@ class Packet:
         # --- Message section ---
         if self.compressed:
             raise NotImplementedError("Compression not yet implemented.")
-
-
         message_section = self.message_payload
 
-        # Final payload
+        # --- Final assembly ---
         packet_payload = header + version_byte + flags_byte + signature_section + message_section
         self.packet_payload = packet_payload
-        #print("assembled packet_payload")
-        #bprint(packet_payload)
         return self.packet_payload
 
     def disassemble(self, packet_payload: bytes, from_call: Optional[str] = None) -> Tuple[bytes, AuthType]:
@@ -374,8 +354,6 @@ class Packet:
         Raises:
             TypeError: If the packet is invalid or too short.
         """
-        #print("unpacking the following payload")
-        #bprint(packet_payload)
 
         if not isinstance(packet_payload, (bytes, bytearray)):
             raise TypeError("Data must be bytes or bytearray")
@@ -387,7 +365,6 @@ class Packet:
 
         if packet_payload[:2] != MAGIC_BYTES:
             #This is not a chattervox payload.
-            #print("not CV packet")
             self.packet_payload     = packet_payload
             self.auth_type          = AuthType.UNKNOWN
             return self.packet_payload, self.auth_type
@@ -396,7 +373,6 @@ class Packet:
             self.version_number = packet_payload[2]
             self.version_byte   = version_number.to_bytes(1, byteorder='big', signed=False)
             flags_byte          = packet_payload[3]
-            #print(f"{flags_byte:08b}")
             self.signed         = (flags_byte & 0b10) != 0   # second least significant bit
             self.compressed     = (flags_byte & 0b01) != 0   # least significant bit
 
@@ -414,12 +390,10 @@ class Packet:
             self.message_payload = message_payload  # keep raw bytes for further processing
             self.packet_payload = packet_payload
 
-
-
-            # Determine authentication type without decoding the message
+            # Determine authentication status
             self.auth_type = self._verify_signature(from_call)
 
-        # Return raw payload bytes and AuthType
+        # Return raw payload bytes and authentication status
         return self.message_payload, self.auth_type
 
     def _verify_signature(self, from_call: Optional[str] = None) -> AuthType:
@@ -432,9 +406,6 @@ class Packet:
         Returns:
             AuthType: Authentication status of the payload.
         """
-        
-
-
 
         # No signature present
         if not self.signed or not self.signature:
@@ -448,16 +419,9 @@ class Packet:
         # Attempt verification
         try:
             self.public_key.verify(self.signature, self.message_pay_load)
+            return AuthType.SIGNED_VERIFIED
         except Exception:
             return AuthType.INVALID
-
-        # If callsign is provided, check for mismatch against key identity
-        #if from_call is not None:
-        #    if not self._callsign_matches_key(from_call, self.public_key):
-        #        return AuthType.SIGNED_MISMATCH
-
-        return AuthType.SIGNED_VERIFIED
-
 
     def _callsign_matches_key(self, call: str, pubkey) -> bool:
         """
@@ -483,7 +447,7 @@ def to_ax25_payload(from_call: str,
     Returns:
         Packet: Assembled Packet object ready for AX.25 transmission.
     """
-    
+
     pkt = Packet()
     pkt.from_call = strip_ssid(from_call)
     pkt.message_payload = message_payload
@@ -521,7 +485,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "configure":
         configure(CONFIG_FILE)
     else:
-        print("Usage: python3 pauth.py configure")
+        print("Usage: python3 axauth.py configure")
 
 
 if __name__ == "__main__":
