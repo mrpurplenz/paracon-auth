@@ -52,6 +52,41 @@ import base64
 APP_NAME = "axauth"
 CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
 
+
+def compress_message(message_bytes: bytes):
+    """
+    Compress a message and base64 encode it.
+    Compares against base64 encoding only.
+    Returns (encoded_message_str, compress_flag).
+    1-compress, 2-encode
+    """
+    
+    # Option 1: zlib compress + base64
+    compressed = zlib.compress(message_bytes)
+    b64_compressed = base64.b64encode(compressed)
+    
+    # Option 2: just base64 encoding
+    b64_plain = base64.b64encode(message_bytes)   
+    
+    # Choose smaller
+    if len(b64_compressed) < len(b64_plain):
+        return b64_compressed, True
+    else:
+        return b64_plain, False
+
+
+def decompress_message(encoded_message: str, compress_flag: bool):
+    """
+    Decode a message that may have been compressed.
+    Returns the original message bytes.
+    1-decode, 2-decompress
+    """
+    decoded = base64.b64decode(encoded_message)
+    if compress_flag:
+        return zlib.decompress(decoded)
+    else:
+        return decoded
+
 def configure(config_path):
     cfg = ConfigParser()
 
@@ -293,11 +328,11 @@ class Packet:
             - [0x0000] 16 bits  Magic Header b'x7a39'
             - [0x0002] 8 bits   Version Byte b'x01'
             - [0x0003] 6 bits   Reserved/Unused
-            - [0x0003] 1 bit    Digital Signature Flag
+            - [0x0003] 1 bit    Digital Signature Flag 
             - [0x0003] 1 bit    Compression Flag
             - [0x0004] [opt] 8 bits Signature Length
-            - [0x0005] [opt] Signature (Signature Length bytes)
-            - [rest]   Message (raw or compressed bytes)
+            - [0x0005] [opt] Signature (Signature Length bytes) base64 encoded
+            - [rest]   Message (raw or compressed bytes) base64 encoded
 
         """
         payload = b''
@@ -305,6 +340,12 @@ class Packet:
         # --- Fixed header ---
         header = MAGIC_BYTES  # magic header
         version_byte = self.version_byte
+
+        # --- Message section ---
+        #if self.compressed:
+        #    raise NotImplementedError("Compression not yet implemented.")
+        message_section, self.compressed = compress_message(self.message_payload)
+        #message_section = self.message_payload
 
         # --- Flags ---
         # Construct one byte: 6 unused bits, then signature flag, then compression flag
@@ -332,10 +373,7 @@ class Packet:
         else:
             self.auth_type = AuthType.UNSIGNED
 
-        # --- Message section ---
-        if self.compressed:
-            raise NotImplementedError("Compression not yet implemented.")
-        message_section = self.message_payload
+
 
         # --- Final assembly ---
         packet_payload = header + version_byte + flags_byte + signature_section + message_section
@@ -389,8 +427,12 @@ class Packet:
                 self.signature_length = 0
 
             # Slice the remaining payload (message/compressed data)
-            message_payload = packet_payload[idx:]
-            self.message_payload = message_payload  # keep raw bytes for further processing
+            #message_payload = packet_payload[idx:]
+            #self.message_payload = message_payload  # keep raw bytes for further processing
+            
+            raw_message_payload = packet_payload[idx:]
+            self.message_payload = decompress_message(raw_message_payload, self.compressed)            
+            
             self.packet_payload = packet_payload
 
             # Determine authentication status
