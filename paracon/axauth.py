@@ -47,7 +47,7 @@ from pathlib import Path
 from platformdirs import user_config_dir
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
-
+import base64
 
 APP_NAME = "axauth"
 CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
@@ -317,7 +317,10 @@ class Packet:
         signature_section = b""
         if self.signed:
             if self.private_key:
-                self.signature = self.private_key.sign(self.message_payload)
+                raw_signature = self.private_key.sign(self.message_payload)
+                # Encode to base64 for safe transport
+                self.signature = base64.b64encode(raw_signature)
+                #self.signature = self.private_key.sign(self.message_payload)
             sig_len = len(self.signature)
             if sig_len > 255:
                 raise ValueError("Signature length exceeds 255 bytes.")
@@ -418,7 +421,9 @@ class Packet:
 
         # Attempt verification
         try:
-            self.public_key.verify(self.signature, self.message_pay_load)
+            raw_signature = base64.b64decode(self.signature)
+            self.public_key.verify(raw_signature, self.message_pay_load)
+            #self.public_key.verify(self.signature, self.message_pay_load)
             return AuthType.SIGNED_VERIFIED
         except Exception:
             return AuthType.INVALID

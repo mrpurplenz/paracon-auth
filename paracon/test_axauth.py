@@ -11,9 +11,11 @@ import configparser
 from configparser import ConfigParser
 from pathlib import Path
 from platformdirs import user_config_dir
+import base64
 
 APP_NAME = "axauth"
 CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
+TEST_MESSAGE="5"
 
 def dep_make_test_keypair():
     """
@@ -45,11 +47,11 @@ class TestAxauthRoundTrip(unittest.TestCase):
         #self.local_SSID = Path(self.config["DEFAULT"]["LOCAL_SSID"])
         #self.local_station = self.from_call + "-" + self.local_SSID
         self.private_key_file = Path(self.config["DEFAULT"]["PRIVATE_KEY"])
-        public_keys_dir = Path(self.config["DEFAULT"]["PUBLIC_KEYS_DIR"])
+        #public_keys_dir = Path(self.config["DEFAULT"]["PUBLIC_KEYS_DIR"])
         
         # --- Load private key ---
         if not self.private_key_file.exists():
-            raise FileNotFoundError(f"Private key file not found: {private_key_file}")
+            raise FileNotFoundError(f"Private key file not found: {self.private_key_file}")
 
         with open(self.private_key_file, "rb") as f:
             self.private_key = serialization.load_pem_private_key(
@@ -61,7 +63,7 @@ class TestAxauthRoundTrip(unittest.TestCase):
         #self.signing_key = SigningKey.generate()
         #self.verify_key = self.signing_key.verify_key
         #self.from_station = "N0CALL-4"
-        self.message_payload = b"Hello AX.25!"
+        self.message_payload = TEST_MESSAGE.encode("utf-8")
         #priv, pub = make_test_keypair()
         #self.private_key = priv
         #self.public_key = pub
@@ -146,7 +148,7 @@ class TestAxauthRoundTrip(unittest.TestCase):
         self.assertEqual(True,pkt_out.signed)
         self.assertEqual(self.from_call, pkt_out.from_call)
         self.assertEqual(self.message_payload, pkt_out.message_payload)
-        self.assertEqual(self.private_key.sign(self.message_payload), pkt_out.signature)
+        self.assertEqual(base64.b64encode(self.private_key.sign(self.message_payload)), pkt_out.signature)
         #print("part one bytes")
         #bprint(raw_bytes)
 
