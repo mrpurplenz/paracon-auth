@@ -25,6 +25,16 @@ import config
 import pserver
 import urwidx
 
+try:
+    import axauth
+    HAVE_AXAUTH = True
+    from axauth import AuthType
+except ImportError:
+    axauth = None
+    HAVE_AXAUTH = False
+    import warnings
+    warnings.warn("axauth not found. Authentication features disabled.")
+    
 IS_WINDOWS = sys.platform == "win32"
 
 XTPUSHCOLORS = '\x1b[#P'
@@ -76,6 +86,12 @@ palette = [
     ('monitor_text', 'white', 'black'),
     ('monitor_call', 'light green', 'black'),
     ('monitor_own', 'light magenta', 'black'),
+    ('monitor_unkown', 'light cyan', 'black'),
+    ('monitor_notsigned', 'light cyan', 'black'),
+    ('monitor_valid', 'light green', 'black'),
+    ('monitor_keynotfound', 'yellow', 'black'),
+    ('monitor_invalid', 'light red', 'black'),
+
 
     # Connections
     ('connection_inbound', 'light cyan', 'black'),
@@ -113,6 +129,10 @@ def callsign_filter(widget, key):
         key = key.upper()
     return key
 
+if HAVE_AXAUTH:
+    class MessageAttributes(NamedTuple):
+        mon_type: pserver.MonitorType
+        auth_type: AuthType = AuthType.UNKNOWN
 
 class SizeListBox(urwid.ListBox):
     """
@@ -243,7 +263,11 @@ class MonitorPanel(urwid.WidgetWrap):
 
     def _update_from_queue(self, obj):
         while not self._queue.empty():
-            (kind, port, line) = self._queue.get()
+            (passed_kind, port, line) = self._queue.get()
+            if HAVE_AXAUTH:
+                kind = passed_kind.mon_type
+            else:
+                kind = passed_kind
             if (kind is pserver.MonitorType.UNPROTO_INFO
                     or kind is pserver.MonitorType.UNPROTO_OWN
                     or kind is pserver.MonitorType.CONN_INFO
@@ -255,8 +279,14 @@ class MonitorPanel(urwid.WidgetWrap):
                 else:
                     logger.debug("Coloring failed: {}".format(line))
                     self.add_line(line)
-            elif (kind is pserver.MonitorType.UNPROTO_TEXT
-                    or kind is pserver.MonitorType.CONN_TEXT):
+            elif kind is pserver.MonitorType.UNPROTO_TEXT:
+                if HAVE_AXAUTH:
+                    auth_type = passed_kind.auth_type
+                    
+                    self.add_multi_color_line(line, auth_type)
+                else:
+                    self.add_multi_line(line)
+            elif kind is pserver.MonitorType.CONN_TEXT:
                 # self.add_line(urwidx.safe_string(line.rstrip()))
                 self.add_multi_line(line)
             elif (kind is pserver.MonitorType.UNPROTO_NETROM
@@ -278,12 +308,26 @@ class MonitorPanel(urwid.WidgetWrap):
                                     d.best_quality))
         return True
 
-    def add_line(self, line):
+    def add_line(self, line, auth_type=None):
         # Skip if the ListBox has not yet been fully initialized
         if not self._list.size:
             return
         line = urwidx.safe_text(line)
-        text = urwid.AttrMap(urwid.Text(line), 'monitor_text')
+
+        if auth_type is not None:
+            #auth_type = AuthType.INVALID
+            if auth_type == AuthType.UNKNOWN:
+                text = urwid.AttrMap(urwid.Text(line), 'monitor_unkown')
+            if auth_type == AuthType.NOTSIGNED:
+                text = urwid.AttrMap(urwid.Text(line), 'monitor_notsigned')
+            if auth_type == AuthType.VALID:
+                text = urwid.AttrMap(urwid.Text(line), 'monitor_valid')
+            if auth_type == AuthType.KEYNOTFOUND:
+                text = urwid.AttrMap(urwid.Text(line), 'monitor_keynotfound')
+            if auth_type == AuthType.INVALID:
+                text = urwid.AttrMap(urwid.Text(line), 'monitor_invalid')
+        else:
+            text = urwid.AttrMap(urwid.Text(line), 'monitor_text')
         # Save the state of visibility before appending new content
         ends_visible = self._list.ends_visible(self._list.size)
         self._log.append(text)
@@ -297,6 +341,14 @@ class MonitorPanel(urwid.WidgetWrap):
         lines = text.split('\r')
         for line in lines:
             self.add_line(line)
+            
+    def add_multi_color_line(self, text, auth_type):
+        #auth_type = AuthType.VALID
+        text = text.rstrip('\x00').rstrip().replace('\r\n', '\r')
+        lines = text.split('\r')
+        for line in lines:
+            self.add_line(line, auth_type)
+            
 
 
 class MonitorWindow(urwid.WidgetWrap):

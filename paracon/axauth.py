@@ -6,7 +6,7 @@
 # =============================================================================
 
 """
-axauth module
+axauth module auth version 2 (base64 encoding for byte safe agwpe handling)
 
 This module provides classes and functions to construct, disassemble,
 compress, and optionally sign or verify Chattervox payloads for use
@@ -48,10 +48,23 @@ from platformdirs import user_config_dir
 from cryptography.hazmat.primitives.asymmetric import ed25519
 from cryptography.hazmat.primitives import serialization
 import base64
+from typing import Union
 
 APP_NAME = "axauth"
 CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
+PROTOCOL_VERSION = 2 #To distinguish from the original version without b64 
 
+class AuthType(Enum):
+    """
+    Type used to identify the authentication 
+    status for display in application.
+    """
+    UNKNOWN           = "UK"  # Unknown or not yet determined
+    NOTSIGNED         = "NS"  # No signature present 
+    VALID             = "SV"  # Signature present and verified 
+    KEYNOTFOUND       = "NK"  # No public key available "KeyNotFound"
+    INVALID           = "IV"  # Signature invalid "Invalid""
+    
 
 def compress_message(message_bytes: bytes):
     """
@@ -74,25 +87,34 @@ def compress_message(message_bytes: bytes):
     else:
         return b64_plain, False
 
-
-def decompress_message(encoded_message: str, compress_flag: bool):
+def decompress_message(encoded_message: Union[str, bytes], compress_flag: bool, version_number: int) -> bytes:
     """
     Decode a message that may have been compressed.
     Returns the original message bytes.
-    1-decode, 2-decompress
+    
+    Steps:
+    1. Decode Base64 if version 2 and input is str
+    2. Decompress if compress_flag is True
     """
-    decoded = base64.b64decode(encoded_message)
+    # Ensure we have bytes
+    if version_number == 2:
+        decoded = base64.b64decode(encoded_message)
+    else:
+        decoded = encoded_message  # version 1 already bytes
+
     if compress_flag:
         return zlib.decompress(decoded)
     else:
         return decoded
+    
+
 
 def configure(config_path):
     cfg = ConfigParser()
 
     """Interactive setup: ask for callsign, make config, generate keys."""
     local_call = input("Enter your callsign for authenticating public keys: ").strip().upper()
-    if "-" in callsign:
+    if "-" in local_call:
         print("⚠️  Please omit SSID (e.g. use N0CALL instead of N0CALL-1).")
         return
     ssid_input = input("Enter the SSID for your local station (leave blank for 0): ").strip()
@@ -141,7 +163,7 @@ def strip_ssid(call: str) -> str:
 def ensure_config(config_path: Path):
     """Create a config file if it doesn't exist."""
     if not config_path.exists():
-        print("Error: No authentication configuration found. Run 'axauth configure'")
+        print("Error: Configuration found. Run 'axauth configure'")
         sys.exit(1)
 
 def ensure_keys(config_path: Path):
@@ -190,32 +212,12 @@ def ensure_keys(config_path: Path):
     print(f"  Public key:  {pub_path}")
 
 
-
-def bprint(data):
-     print(codecs.encode(data, "hex").decode())
-
-class AuthType(Enum):
-    """
-    Type used to identify the authentication status for display in 
-    Paracon.
-    """
-    UNKNOWN           = "UK"  # Unknown or not yet determined
-    UNSIGNED          = "NS"  # No signature present
-    SIGNED_VERIFIED   = "SV"  # Signature present and verified
-    UNTRUSTED         = "UT"  # Signature present but no public key available
-    INVALID           = "IV"  # Signature invalid (forged/tampered)
-
 # Magic bytes used to identify a Chattervox packet
 MAGIC_BYTES = b'\x7a\x39'     #A constant two-byte value used to identify chattervox packets.
 
-version_number = 1           #The protocol version number between 1-255.
+version_number = PROTOCOL_VERSION   #The protocol version number between 1-255.
 version_byte = version_number.to_bytes(1, byteorder='big', signed=False)
 
-
-class HeaderFlags:
-    """Bitmask flags for Chattervox packet headers."""
-    SIGNED            = False  #A value of True indicates that the message contains a ECDSA digital signature.
-    COMPRESSED        = False  #A value of True indicates that the message payload is compressed.
 
 class Packet:
     """
@@ -239,11 +241,11 @@ class Packet:
 
     def __init__(self):
         #Packet data
-        self.version_number: Optional[integer]   = version_number
+        self.version_number: Optional[int]       = version_number
         self.version_byte                        = version_number.to_bytes(1, byteorder='big', signed=False)
         self.signed: Optional[bool]              = False
         self.compressed: Optional[bool]          = False
-        self.signature_length: Optional[integer] = 0
+        self.signature_length: Optional[int]     = 0
         self.signature: Optional[bytes]          = None
         self.message_payload: Optional[bytes]    = None
         self.packet_payload: Optional[bytes]     = None
@@ -294,7 +296,6 @@ class Packet:
         Look up and load the public key for self.from_call
         based on the PUBLIC_KEYS_DIR specified in self.config.
         """
-        config = self.config
         if from_call is None:
             raise ValueError("from_call is not set")
 
@@ -335,7 +336,7 @@ class Packet:
             - [rest]   Message (raw or compressed bytes) base64 encoded
 
         """
-        payload = b''
+        packet_payload = b''
 
         # --- Fixed header ---
         header = MAGIC_BYTES  # magic header
@@ -368,10 +369,10 @@ class Packet:
             signature_section += sig_len.to_bytes(1, "big")  # length
             signature_section += self.signature             # raw bytes
             self.signature_length = sig_len
-            self.auth_type = AuthType.UNTRUSTED
+            self.auth_type = AuthType.KEYNOTFOUND
             self._verify_signature(self.from_call)
         else:
-            self.auth_type = AuthType.UNSIGNED
+            self.auth_type = AuthType.NOTSIGNED #UNSIGNED
 
 
 
@@ -407,6 +408,7 @@ class Packet:
         if packet_payload[:2] != MAGIC_BYTES:
             #This is not a chattervox payload.
             self.packet_payload     = packet_payload
+            self.message_payload    = packet_payload
             self.auth_type          = AuthType.UNKNOWN
             return self.packet_payload, self.auth_type
         else:
@@ -422,21 +424,20 @@ class Packet:
                 self.signature_length = packet_payload[4]
                 self.signature = packet_payload[5:5 + self.signature_length]
                 idx = 5 + self.signature_length
+                
+                raw_message_payload = packet_payload[idx:]
+                self.message_payload = decompress_message(
+                    raw_message_payload,
+                    self.compressed,
+                    self.version_number
+                    )
+                self.auth_type = self._verify_signature(from_call)
             else:
-                self.signature = None
-                self.signature_length = 0
-
-            # Slice the remaining payload (message/compressed data)
-            #message_payload = packet_payload[idx:]
-            #self.message_payload = message_payload  # keep raw bytes for further processing
-            
-            raw_message_payload = packet_payload[idx:]
-            self.message_payload = decompress_message(raw_message_payload, self.compressed)            
-            
+                self.signature          = None
+                self.signature_length   = 0
+                self.message_payload    = packet_payload
+                self.auth_type          = AuthType.NOTSIGNED
             self.packet_payload = packet_payload
-
-            # Determine authentication status
-            self.auth_type = self._verify_signature(from_call)
 
         # Return raw payload bytes and authentication status
         return self.message_payload, self.auth_type
@@ -454,19 +455,19 @@ class Packet:
 
         # No signature present
         if not self.signed or not self.signature:
-            return AuthType.UNSIGNED
+            return AuthType.NOTSIGNED
 
         # No public key available
         self.public_key = self.load_public_key(from_call)
         if not self.public_key:
-            return AuthType.UNTRUSTED
+            return AuthType.KEYNOTFOUND
 
         # Attempt verification
         try:
             raw_signature = base64.b64decode(self.signature)
             self.public_key.verify(raw_signature, self.message_pay_load)
             #self.public_key.verify(self.signature, self.message_pay_load)
-            return AuthType.SIGNED_VERIFIED
+            return AuthType.VALID
         except Exception:
             return AuthType.INVALID
 
@@ -487,7 +488,7 @@ def to_ax25_payload(from_call: str,
 
     Args:
         message (bytes): a byte array message ready to send via AWGPE.
-        from_call (str): Sender callsign (Doesnt include SSID), used to id the public key
+        from_call (str): Sender callsign (no SSID), used to id the public key
         signature (bytes, optional): Signature bytes.
         sign (bool): Whether to sign the message.
 

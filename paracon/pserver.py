@@ -30,6 +30,7 @@ Add signing and authentication of packets using chattevox protocol for
 the axauth module.
 """
 import codecs
+from typing import NamedTuple
 try:
     import axauth
     HAVE_AXAUTH = True
@@ -42,18 +43,18 @@ except ImportError:
 
 def data_from_signed(data, call_from):
     """
-    Sanitises a payload signed with the chattervox protocol and returns 
+    Sanitises a payload signed with the chattervox v2 protocol and returns 
     the authentication status.
     """
     auth_packet = axauth.from_ax25_payload(data, call_from)
     sanitised_data = auth_packet.message_payload
     auth_type = auth_packet.auth_type #Used to identify authentication status
     data = sanitised_data
-    return data
+    return data, auth_type
 
 def signed_from_data(data, call_from):
     """
-    Converts a standard payload into a chattervox signed payload when
+    Converts a standard payload into a chattervox v2 signed payload when
     axauth is available.
     """
     sign = True
@@ -80,7 +81,11 @@ class MonitorType(Enum):
     CONN_NETROM    = 'CN'
     CONN_BINARY    = 'CB'
     SUPER_INFO     = 'SI'
-
+    
+if HAVE_AXAUTH:
+    class MessageAttributes(NamedTuple):
+        mon_type: MonitorType
+        auth_type: AuthType = AuthType.UNKNOWN
 
 class _Monitor(pe.monitor.Monitor):
     """
@@ -96,20 +101,42 @@ class _Monitor(pe.monitor.Monitor):
         return self._queue
 
     def _monitored_unproto(self, port, call_from, call_to, text, data, own):
-        mon_type = MonitorType.UNPROTO_OWN if own else MonitorType.UNPROTO_INFO
-        self._queue.put((mon_type, port, text))
-
+        #Sanitise and get auth status
         if HAVE_AXAUTH:
-            #Attempt to sanitise a packet if signed
-            data = data_from_signed(data, call_from)
+            data, auth_type = data_from_signed(data, call_from)
+            
+        mon_type = MonitorType.UNPROTO_OWN if own else MonitorType.UNPROTO_INFO
+        if HAVE_AXAUTH:
+            msg_attribs = MessageAttributes(mon_type, auth_type)
+        else:
+            msg_attribs = mon_type
+        
+        self._queue.put((msg_attribs, port, text))
+
 
         if ' pid=F0 ' in text:
-            self._queue.put((MonitorType.UNPROTO_TEXT, port,
-                             data.decode('utf-8', 'replace')))
+            mon_type = MonitorType.UNPROTO_TEXT
+            if HAVE_AXAUTH:
+                msg_attribs = MessageAttributes(mon_type, auth_type)
+            else:
+                msg_attribs = mon_type
+            self._queue.put((msg_attribs, port,
+                data.decode('utf-8', 'replace')))
+
         elif ' pid=CF ' in text:
-            self._queue.put((MonitorType.UNPROTO_NETROM, port, data))
+            mon_type = MonitorType.UNPROTO_NETROM
+            if HAVE_AXAUTH:
+                msg_attribs = MessageAttributes(mon_type, auth_type)
+            else:
+                msg_attribs = mon_type
+            self._queue.put((msg_attribs, port, data))
         else:
-            self._queue.put((MonitorType.UNPROTO_BINARY, port, data))
+            mon_type = MonitorType.UNPROTO_BINARY
+            if HAVE_AXAUTH:
+                msg_attribs = MessageAttributes(mon_type, auth_type)
+            else:
+                msg_attribs = mon_type
+            self._queue.put((msg_attribs, port, data))
 
     def monitored_unproto(self, port, call_from, call_to, text, data):
         self._monitored_unproto(port, call_from, call_to, text, data, False)
@@ -118,19 +145,49 @@ class _Monitor(pe.monitor.Monitor):
         self._monitored_unproto(port, call_from, call_to, text, data, True)
 
     def monitored_connected(self, port, call_from, call_to, text, data):
-        self._queue.put((MonitorType.CONN_INFO, port, text))
+        mon_type = MonitorType.CONN_INFO
+        if HAVE_AXAUTH:
+            auth_type = AuthType.UNKNOWN
+            msg_attribs = MessageAttributes(mon_type, auth_type)
+        else:
+            msg_attribs = mon_type
+        self._queue.put((msg_attribs, port, text))
         # Direwolf 1.6 has a bug whereby it prepends '0x' to the PID value
         # of 'I' frames only, so we need to work around that.
         if ' pid=F0 ' in text or ' pid=0xF0 ' in text:
-            self._queue.put((MonitorType.CONN_TEXT, port,
+            mon_type = MonitorType.CONN_TEXT
+            if HAVE_AXAUTH:
+                auth_type = AuthType.UNKNOWN
+                msg_attribs = MessageAttributes(mon_type, auth_type)
+            else:
+                msg_attribs = mon_type
+            self._queue.put((msg_attribs, port,
                              data.decode('utf-8', 'replace')))
         elif ' pid=CF ' in text or ' pid=0xCF ' in text:
-            self._queue.put((MonitorType.CONN_NETROM, port, data))
+            mon_type = MonitorType.CONN_NETROM
+            if HAVE_AXAUTH:
+                auth_type = AuthType.UNKNOWN
+                msg_attribs = MessageAttributes(mon_type, auth_type)
+            else:
+                msg_attribs = mon_type
+            self._queue.put((msg_attribs, port, data))
         else:
-            self._queue.put((MonitorType.CONN_BINARY, port, data))
+            mon_type = MonitorType.CONN_BINARY
+            if HAVE_AXAUTH:
+                auth_type = AuthType.UNKNOWN
+                msg_attribs = MessageAttributes(mon_type, auth_type)
+            else:
+                msg_attribs = mon_type
+            self._queue.put((msg_attribs, port, data))
 
     def monitored_supervisory(self, port, call_from, call_to, text):
-        self._queue.put((MonitorType.SUPER_INFO, port, text))
+        mon_type = MonitorType.SUPER_INFO
+        if HAVE_AXAUTH:
+            auth_type = AuthType.UNKNOWN
+            msg_attribs = MessageAttributes(mon_type, auth_type)
+        else:
+            msg_attribs = mon_type
+        self._queue.put((msg_attribs, port, text))
 
 
 class _Connection(pe.connect.Connection):
