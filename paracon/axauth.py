@@ -76,10 +76,12 @@ def compress_message(message_bytes: bytes):
     
     # Option 1: zlib compress + base64
     compressed = zlib.compress(message_bytes)
-    b64_compressed = base64.b64encode(compressed)
+    #b64_compressed = base64.b64encode(compressed)
+    b64_compressed = compressed
     
     # Option 2: just base64 encoding
-    b64_plain = base64.b64encode(message_bytes)   
+    #b64_plain = base64.b64encode(message_bytes)   
+    b64_plain = message_bytes
     
     # Choose smaller
     if len(b64_compressed) < len(b64_plain):
@@ -361,7 +363,8 @@ class Packet:
             if self.private_key:
                 raw_signature = self.private_key.sign(self.message_payload)
                 # Encode to base64 for safe transport
-                self.signature = base64.b64encode(raw_signature)
+                #self.signature = base64.b64encode(raw_signature)
+                self.signature = raw_signature
                 #self.signature = self.private_key.sign(self.message_payload)
             sig_len = len(self.signature)
             if sig_len > 255:
