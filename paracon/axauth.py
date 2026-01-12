@@ -6,7 +6,12 @@
 # =============================================================================
 
 """
-axauth module auth version 1 (v2 was a failed base64 encoding for byte safe agwpe handling)
+axauth module auth version 1 
+(The non standard version 2 I wrote enables base64 encoding for byte safe agwpe handling and testing)
+
+As versions are incremented this file should read the expected version from the config for making signed packets
+and from the packets for decoding. Code is still needed to fail gracefully when packet versions are higher than 
+the available implemented versions
 
 This module provides classes and functions to construct, disassemble,
 compress, and optionally sign or verify Chattervox payloads for use
