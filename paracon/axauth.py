@@ -6,12 +6,12 @@
 # =============================================================================
 
 """
-axauth module auth version 2 (base64 encoding for byte safe agwpe handling)
+axauth module auth version 1 (v2 was a failed base64 encoding for byte safe agwpe handling)
 
 This module provides classes and functions to construct, disassemble,
 compress, and optionally sign or verify Chattervox payloads for use
 with ax25 software such as Paracon's pserver.py (AGWPE-based) module.
-The implementation isbased on the chattervox protocol v1 from Brannon Dorsey
+The implementation is based on the chattervox protocol v1 from Brannon Dorsey
 described at:
 
 https://github.com/brannondorsey/chattervox?tab=readme-ov-file#chattervox-protocol-v1-packet
@@ -52,7 +52,7 @@ from typing import Union
 
 APP_NAME = "axauth"
 CONFIG_FILE = Path(user_config_dir(APP_NAME)) / "config.ini"
-PROTOCOL_VERSION = 2 #To distinguish from the original version without b64 
+PROTOCOL_VERSION = 1 #To distinguish from the original version without b64 
 
 class AuthType(Enum):
     """
@@ -84,10 +84,16 @@ def compress_message(message_bytes: bytes):
     b64_plain = message_bytes
     
     # Choose smaller
-    if len(b64_compressed) < len(b64_plain):
-        return b64_compressed, True
+    if PROTOCOL_VERSION == 2:
+        if len(b64_compressed) < len(b64_plain):
+            return b64_compressed, True
+        else:
+            return b64_plain, False
     else:
-        return b64_plain, False
+        if len(compressed) < len(message_bytes):
+            return compressed, True
+        else:
+            return message_bytes, False
 
 def decompress_message(encoded_message: Union[str, bytes], compress_flag: bool, version_number: int) -> bytes:
     """
@@ -143,9 +149,7 @@ def configure(config_path):
     print("Created config.ini at:", config_path)
     print("Private key will be stored at:", private_key_path)
     print("Public keys folder:", public_keys_dir)
-
     ensure_keys(config_path)
-
 
     return cfg
 
@@ -329,7 +333,7 @@ class Packet:
 
         Payload layout:
             - [0x0000] 16 bits  Magic Header b'x7a39'
-            - [0x0002] 8 bits   Version Byte b'x01'
+            - [0x0002] 8 bits   Version Byte b'x01' for version 1
             - [0x0003] 6 bits   Reserved/Unused
             - [0x0003] 1 bit    Digital Signature Flag 
             - [0x0003] 1 bit    Compression Flag
@@ -343,6 +347,7 @@ class Packet:
         # --- Fixed header ---
         header = MAGIC_BYTES  # magic header
         version_byte = self.version_byte
+        version_number = int.from_bytes(version_byte, byteorder='big', signed=False)
 
         # --- Message section ---
         #if self.compressed:
@@ -362,10 +367,11 @@ class Packet:
         if self.signed:
             if self.private_key:
                 raw_signature = self.private_key.sign(self.message_payload)
-                # Encode to base64 for safe transport
-                #self.signature = base64.b64encode(raw_signature)
-                self.signature = raw_signature
-                #self.signature = self.private_key.sign(self.message_payload)
+                if version_number == 2:
+                    # Encode to base64 for safe transport
+                    self.signature = base64.b64encode(raw_signature)
+                else:
+                    self.signature = raw_signature
             sig_len = len(self.signature)
             if sig_len > 255:
                 raise ValueError("Signature length exceeds 255 bytes.")
@@ -455,7 +461,8 @@ class Packet:
         Returns:
             AuthType: Authentication status of the payload.
         """
-
+        version_number = self.version_number
+        
         # No signature present
         if not self.signed or not self.signature:
             return AuthType.NOTSIGNED
@@ -467,9 +474,12 @@ class Packet:
 
         # Attempt verification
         try:
-            raw_signature = base64.b64decode(self.signature)
+            if version_number == 2:
+                raw_signature = base64.b64decode(self.signature)
+            else:
+                raw_signature = self.signature
+                
             self.public_key.verify(raw_signature, self.message_pay_load)
-            #self.public_key.verify(self.signature, self.message_pay_load)
             return AuthType.VALID
         except Exception:
             return AuthType.INVALID
